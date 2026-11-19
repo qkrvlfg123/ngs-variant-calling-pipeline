@@ -22,6 +22,24 @@ FASTQ에서 시작해 **QC → 정렬 → 변이검출 → 필터링 → 주석 
 ([요약 리포트](docs/example_output/HG001.report.md), [변이 표](docs/example_output/HG001.variants.tsv),
 MultiQC HTML, 최종 VCF).
 
+## 진행 상태 (2026-11-20 기준)
+
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| 환경 구축 | WSL2(Ubuntu) + micromamba, 도구 버전 고정 | 완료 |
+| 데이터 준비 | 레퍼런스·GTF·타깃 BED·HG001 FASTQ 자동 다운로드 | 완료 |
+| QC · 정렬 | FastQC, fastp, BWA-MEM2, MarkDuplicates, mosdepth, MultiQC | 완료 |
+| 변이검출 · 필터 · 정규화 | HaplotypeCaller, hard filter, bcftools norm | 완료 |
+| 주석 | SnpEff(MANE Select), ClinVar | 완료 |
+| 정확도 검증 | GIAB v4.2.1 대비 precision / recall | 완료 |
+| 리포트 | 변이 표, PGx 자리 확인(GIAB 정답과 자동 대조), 요약 Markdown | 완료 |
+| IGV 확인 | 스크린샷 4장 | 완료 |
+| README 결과 해석 | QC, 놓친 변이 원인, PGx, 주석 주의 사례 | 완료 |
+| hap.py 기반 정확도 비교 | haplotype 단위 비교로 교체 | 미착수 (선택) |
+| star allele 판정 | PharmCAT 등 전용 도구로 `*1/*2` 확정 | 미착수 (선택) |
+
+전체 파이프라인은 한 번의 명령으로 끝까지 실행되는 상태입니다(Snakemake rule 22개).
+
 ## 파이프라인 구조
 
 ```
