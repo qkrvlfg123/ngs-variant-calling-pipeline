@@ -1,0 +1,55 @@
+# ============================================================
+# 파이프라인 설정 파일
+# - 코드(Snakefile)와 설정(샘플/영역/파라미터)을 분리해 두면,
+#   같은 워크플로를 다른 샘플·다른 유전자 패널에 그대로 재사용할 수 있다.
+# ============================================================
+
+sample: HG001            # GIAB 표준 샘플 NA12878 (정답 변이 세트가 공개된 "벤치마크" 샘플)
+chrom: chr10             # 레퍼런스는 GRCh38 중 chr10 한 개만 사용 (샌드박스에서 완주 가능한 크기)
+
+# ---- 미니 패널: chr10 위의 임상적으로 의미 있는 유전자 5개 ----
+# 유전성 암 패널 유전자(PTEN, RET, BMPR1A) + 약물유전체(PGx) 유전자(CYP2C19, CYP2C9)
+genes:
+  - PTEN       # Cowden 증후군 / PTEN 과오종 종양 증후군
+  - RET        # 다발성 내분비 종양 2형(MEN2), 갑상선 수질암
+  - BMPR1A     # 연소성 용종증 증후군
+  - CYP2C19    # clopidogrel, PPI, 항우울제 대사
+  - CYP2C9     # warfarin, NSAID 대사
+padding: 2000            # 유전자 양옆으로 2kb 확장 (프로모터 변이, 예: CYP2C19*17 c.-806C>T 포함 목적)
+
+# ---- 공개 데이터 URL (크레덴셜 불필요) ----
+urls:
+  reference: "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/chromosomes/chr10.fa.gz"
+  gtf: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_46/gencode.v46.basic.annotation.gtf.gz"
+  # GIAB HG001 Illumina HiSeq 300x WGS (GRCh38 정렬 BAM, 562GB) -> 인덱스를 이용해 패널 영역만 원격 슬라이싱
+  reads_bam: "https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/NA12878/NIST_NA12878_HG001_HiSeq_300x/NHGRI_Illumina300X_novoalign_bams/HG001.GRCh38_full_plus_hs38d1_analysis_set_minus_alts.300x.bam"
+  clinvar: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz"
+  # GIAB v4.2.1 정답(truth) 변이와 고신뢰 영역 -> 내 파이프라인 결과의 정확도 검증용
+  truth_vcf: "https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/NA12878_HG001/NISTv4.2.1/GRCh38/HG001_GRCh38_1_22_v4.2.1_benchmark.vcf.gz"
+  truth_bed: "https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/NA12878_HG001/NISTv4.2.1/GRCh38/HG001_GRCh38_1_22_v4.2.1_benchmark.bed"
+
+# ---- 다운샘플링 ----
+# 원본은 300x. 일반적인 WGS(30x)~패널 수준으로 줄여서 실행 시간을 단축.
+# samtools view -s SEED.FRACTION 형식: 42.2 => seed 42, 전체 read pair의 20% (약 60x)
+subsample: "42.2"
+
+threads: 8
+
+# ---- GATK hard filter 기준 (GATK Best Practices 권장값) ----
+# 샘플 1개·작은 영역에서는 VQSR(머신러닝 필터)을 학습시킬 수 없어서 hard filter 사용
+filters:
+  snp: 'QD < 2.0 || FS > 60.0 || MQ < 40.0 || SOR > 3.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0'
+  indel: 'QD < 2.0 || FS > 200.0 || SOR > 10.0 || ReadPosRankSum < -20.0'
+
+# ---- 리포트 설정 ----
+report:
+  # 변이가 검출되지 않은 자리를 "정상(ref)"이라고 말하기 위한 최소 depth
+  min_depth_for_ref_call: 20
+  # 약물유전체 핵심 자리: star allele을 정의하는 변이. 좌표는 적지 않고 rsID로 ClinVar에서 찾는다.
+  # 대립유전자 기능은 CPIC 분류 기준.
+  pgx_sites:
+    - {gene: CYP2C19, allele: "*2",  rsid: 4244285,  change: "G>A", function: "기능 없음"}
+    - {gene: CYP2C19, allele: "*3",  rsid: 4986893,  change: "G>A", function: "기능 없음"}
+    - {gene: CYP2C19, allele: "*17", rsid: 12248560, change: "C>T", function: "기능 증가"}
+    - {gene: CYP2C9,  allele: "*2",  rsid: 1799853,  change: "C>T", function: "기능 감소"}
+    - {gene: CYP2C9,  allele: "*3",  rsid: 1057910,  change: "A>C", function: "기능 없음"}

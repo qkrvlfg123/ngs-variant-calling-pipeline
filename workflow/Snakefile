@@ -1,0 +1,523 @@
+# ============================================================================
+# NGS germline 변이검출 파이프라인 (Snakemake)
+#
+#   FASTQ -> QC(FastQC/fastp) -> 정렬(BWA-MEM2) -> 중복표시(MarkDuplicates)
+#         -> 변이검출(GATK HaplotypeCaller) -> hard filter -> 정규화
+#         -> 주석(SnpEff + ClinVar) -> 리포트
+#
+# 실행:  micromamba run -n ngs snakemake --cores 8
+#
+# Snakemake 읽는 법: 각 rule은 "input 파일로 output 파일을 만드는 방법"이다.
+# 맨 위 rule all 이 요구하는 최종 파일에서 거꾸로 추적해 필요한 rule만 실행하고,
+# 이미 만들어진 파일은 건너뛴다(=중간에 실패해도 그 지점부터 재시작).
+# ============================================================================
+
+configfile: "config/config.yaml"
+
+S = config["sample"]
+CHR = config["chrom"]
+T = config["threads"]
+REF = f"resources/ref/{CHR}.fa"
+BED = "resources/targets/panel.bed"
+SNPEFF_DB = f"{CHR}_mane"
+
+
+rule all:
+    input:
+        "results/qc/multiqc_report.html",
+        f"results/vcf/{S}.final.vcf.gz",
+        f"results/qc/{S}.mosdepth.summary.txt",
+        f"results/benchmark/{S}.benchmark.tsv",
+        f"results/report/{S}.report.md",
+
+
+# ============================================================================
+# 0. 데이터 준비 (레퍼런스 / 유전자 주석 / 타깃 영역 / 샘플 FASTQ)
+# ============================================================================
+
+rule download_reference:
+    # GRCh38(hg38)의 chr10만 내려받는다. 전체 게놈(3.1Gb)은 인덱싱에 메모리 수십 GB가 필요.
+    output:
+        REF,
+    params:
+        url=config["urls"]["reference"],
+    log:
+        "logs/download_reference.log",
+    shell:
+        "(curl -fsSL {params.url} | gunzip -c > {output}) 2> {log}"
+
+
+rule index_reference:
+    # 도구마다 요구하는 인덱스가 다르다.
+    #  .fai  : samtools/GATK가 염색체 내 임의 위치를 빠르게 읽기 위한 인덱스
+    #  .dict : GATK가 요구하는 염색체 이름·길이 사전
+    #  bwa-mem2 index : 정렬 시 seed 검색에 쓰는 FM-index
+    input:
+        REF,
+    output:
+        fai=REF + ".fai",
+        dict=f"resources/ref/{CHR}.dict",
+        bwa=multiext(REF, ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac"),
+    log:
+        "logs/index_reference.log",
+    shell:
+        """
+        (samtools faidx {input}
+         samtools dict {input} -o {output.dict}
+         bwa-mem2 index {input}) &> {log}
+        """
+
+
+rule download_gtf:
+    # GENCODE 유전자 주석에서 chr10만 추출.
+    #  - chr10.gtf       : 유전자 좌표 추출용(타깃 BED 생성)
+    #  - chr10.mane.gtf  : MANE Select 전사체만 -> 변이 주석용
+    #    (MANE Select = NCBI·Ensembl이 합의한 유전자당 대표 전사체. 임상 보고서의 HGVS 표기 기준)
+    output:
+        gtf=f"resources/annot/{CHR}.gtf",
+        mane=f"resources/annot/{CHR}.mane.gtf",
+    params:
+        url=config["urls"]["gtf"],
+        chrom=CHR,
+    log:
+        "logs/download_gtf.log",
+    shell:
+        """
+        (curl -fsSL {params.url} | gunzip -c | awk -F'\\t' '$1=="{params.chrom}"' > {output.gtf}
+         grep 'tag "MANE_Select"' {output.gtf} > {output.mane}) 2> {log}
+        """
+
+
+rule make_targets:
+    # 패널 유전자 이름 -> 좌표(BED). 임상 패널의 "타깃 영역 정의"에 해당.
+    input:
+        gtf=f"resources/annot/{CHR}.gtf",
+    output:
+        bed=BED,
+    script:
+        "scripts/make_targets.py"
+
+
+rule fetch_reads:
+    # 공개 GIAB HG001 300x BAM(562GB)에서 패널 영역의 read만 원격으로 잘라 와 FASTQ로 되돌린다.
+    #  - BAM 인덱스(.bai) 덕분에 파일 전체가 아니라 필요한 구간만 HTTP range 요청으로 받는다.
+    #  - samtools view -s : read 이름 해시 기반 서브샘플링이라 pair가 함께 유지된다.
+    #  - collate : 같은 이름의 read(pair)를 인접하게 모음 -> fastq 변환 시 R1/R2 짝 맞춤.
+    # 주의: 실제 검사에서는 시퀀서가 만든 FASTQ에서 시작한다. 여기서는 "작은 FASTQ"를
+    #       얻기 위한 데이터 준비 단계일 뿐이고, 기존 정렬 정보는 버리고 처음부터 다시 정렬한다.
+    input:
+        bed=BED,
+    output:
+        r1=f"resources/reads/{S}_R1.fastq.gz",
+        r2=f"resources/reads/{S}_R2.fastq.gz",
+    params:
+        url=config["urls"]["reads_bam"],
+        frac=config["subsample"],
+        tmp=f"resources/reads/tmp_{S}",
+    threads: 4
+    log:
+        "logs/fetch_reads.log",
+    shell:
+        """
+        (mkdir -p {params.tmp}
+         BED=$(realpath {input.bed}); R1=$(realpath -m {output.r1}); R2=$(realpath -m {output.r2})
+         cd {params.tmp}   # 원격 BAM의 .bai가 현재 폴더에 캐시되므로 임시 폴더에서 실행
+         samtools view -b -h -M -L $BED -s {params.frac} -o region.bam {params.url}
+         samtools collate -@ {threads} -u -O region.bam collate_tmp \
+           | samtools fastq -@ {threads} -n -1 $R1 -2 $R2 -0 /dev/null -s /dev/null -
+         cd - > /dev/null
+         rm -rf {params.tmp}) &> {log}
+        """
+
+
+# ============================================================================
+# 1. Read QC & 트리밍
+# ============================================================================
+
+rule fastqc:
+    # 시퀀싱 원본 품질 확인: 염기별 품질점수, GC 분포, 어댑터 오염, 중복률.
+    # "분석을 시작해도 되는 데이터인가"를 판단하는 첫 관문.
+    input:
+        f"resources/reads/{S}_R1.fastq.gz",
+        f"resources/reads/{S}_R2.fastq.gz",
+    output:
+        directory("results/qc/fastqc"),
+    threads: 2
+    log:
+        "logs/fastqc.log",
+    shell:
+        "mkdir -p {output} && fastqc -t {threads} --outdir {output} {input} &> {log}"
+
+
+rule fastp:
+    # 어댑터 서열과 저품질 염기를 잘라낸다. 그대로 두면 오정렬·위양성 변이의 원인이 된다.
+    # --detect_adapter_for_pe : paired-end 겹침으로 어댑터 자동 탐지
+    input:
+        r1=f"resources/reads/{S}_R1.fastq.gz",
+        r2=f"resources/reads/{S}_R2.fastq.gz",
+    output:
+        r1=temp(f"results/trimmed/{S}_R1.trimmed.fastq.gz"),
+        r2=temp(f"results/trimmed/{S}_R2.trimmed.fastq.gz"),
+        json=f"results/qc/fastp/{S}.fastp.json",
+        html=f"results/qc/fastp/{S}.fastp.html",
+    threads: T
+    log:
+        "logs/fastp.log",
+    shell:
+        """
+        fastp -i {input.r1} -I {input.r2} -o {output.r1} -O {output.r2} \
+              --detect_adapter_for_pe -w {threads} \
+              -j {output.json} -h {output.html} &> {log}
+        """
+
+
+# ============================================================================
+# 2. 정렬 -> 정렬(sort) -> 중복 표시
+# ============================================================================
+
+rule bwa_mem2:
+    # 각 read가 레퍼런스의 어디에서 왔는지 찾는다.
+    # -R (read group): 샘플명(SM)·플랫폼(PL)·라이브러리(LB) 정보. GATK는 RG가 없으면 실행을 거부한다.
+    #   (여러 샘플·여러 lane을 구분하고 MarkDuplicates가 라이브러리 단위로 동작하기 위함)
+    # 정렬 결과는 좌표순으로 sort 해야 인덱싱·변이검출이 가능하다.
+    input:
+        r1=f"results/trimmed/{S}_R1.trimmed.fastq.gz",
+        r2=f"results/trimmed/{S}_R2.trimmed.fastq.gz",
+        ref=REF,
+        idx=multiext(REF, ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac"),
+    output:
+        bam=temp(f"results/bam/{S}.sorted.bam"),
+    params:
+        rg=rf"@RG\tID:{S}\tSM:{S}\tPL:ILLUMINA\tLB:{S}_lib1",
+    threads: T
+    log:
+        "logs/bwa_mem2.log",
+    shell:
+        """
+        (bwa-mem2 mem -t {threads} -R '{params.rg}' {input.ref} {input.r1} {input.r2} \
+           | samtools sort -@ 2 -o {output.bam} -) 2> {log}
+        """
+
+
+rule mark_duplicates:
+    # PCR 증폭으로 생긴 "같은 DNA 조각의 복제본"을 표시한다(삭제가 아니라 flag 표시).
+    # 복제본을 독립된 증거로 세면 PCR 오류가 진짜 변이처럼 보이므로, 변이검출기는 표시된 read를 무시한다.
+    input:
+        f"results/bam/{S}.sorted.bam",
+    output:
+        bam=f"results/bam/{S}.markdup.bam",
+        bai=f"results/bam/{S}.markdup.bam.bai",
+        metrics=f"results/qc/{S}.markdup_metrics.txt",
+    log:
+        "logs/mark_duplicates.log",
+    shell:
+        """
+        (gatk MarkDuplicates -I {input} -O {output.bam} -M {output.metrics}
+         samtools index {output.bam}) &> {log}
+        """
+
+
+rule alignment_qc:
+    # 정렬 품질 지표: 매핑률, properly paired 비율, insert size, 타깃 영역 평균 depth 등.
+    # 임상 검사에서는 "타깃의 몇 %가 20x(또는 30x) 이상인가"가 핵심 합격 기준이다.
+    input:
+        bam=f"results/bam/{S}.markdup.bam",
+        bed=BED,
+    output:
+        flagstat=f"results/qc/{S}.flagstat.txt",
+        stats=f"results/qc/{S}.samtools_stats.txt",
+        summary=f"results/qc/{S}.mosdepth.summary.txt",
+        regions=f"results/qc/{S}.regions.bed.gz",
+        thresholds=f"results/qc/{S}.thresholds.bed.gz",
+    params:
+        prefix=f"results/qc/{S}",
+    threads: 4
+    log:
+        "logs/alignment_qc.log",
+    shell:
+        """
+        (samtools flagstat {input.bam} > {output.flagstat}
+         samtools stats -t {input.bed} {input.bam} > {output.stats}
+         mosdepth -t {threads} -n --by {input.bed} --thresholds 10,20,30,50 {params.prefix} {input.bam}) 2> {log}
+        """
+
+
+rule multiqc:
+    # 흩어진 QC 결과(FastQC, fastp, samtools, MarkDuplicates, mosdepth)를 한 장의 HTML로 통합.
+    input:
+        "results/qc/fastqc",
+        f"results/qc/fastp/{S}.fastp.json",
+        f"results/qc/{S}.markdup_metrics.txt",
+        f"results/qc/{S}.flagstat.txt",
+        f"results/qc/{S}.samtools_stats.txt",
+        f"results/qc/{S}.mosdepth.summary.txt",
+    output:
+        "results/qc/multiqc_report.html",
+    log:
+        "logs/multiqc.log",
+    shell:
+        "multiqc -f -o results/qc results/qc &> {log}"
+
+
+# ============================================================================
+# 3. 변이검출 -> 필터링 -> 정규화
+# ============================================================================
+
+rule haplotype_caller:
+    # GATK HaplotypeCaller: 변이가 의심되는 구간의 read를 국소적으로 재조립(local assembly)해
+    # 후보 haplotype을 만들고, 각 genotype(0/0, 0/1, 1/1)의 우도를 계산한다.
+    # 단순 pileup 방식보다 indel 주변에서 정확하다. -L 로 패널 영역만 분석.
+    input:
+        bam=f"results/bam/{S}.markdup.bam",
+        ref=REF,
+        fai=REF + ".fai",
+        dict=f"resources/ref/{CHR}.dict",
+        bed=BED,
+    output:
+        vcf=f"results/vcf/{S}.raw.vcf.gz",
+    threads: 4
+    log:
+        "logs/haplotype_caller.log",
+    shell:
+        """
+        gatk --java-options '-Xmx4g' HaplotypeCaller \
+            -R {input.ref} -I {input.bam} -L {input.bed} \
+            --native-pair-hmm-threads {threads} \
+            -O {output.vcf} &> {log}
+        """
+
+
+rule hard_filter:
+    # 검출된 변이 중 기술적 오류(위양성)로 보이는 것에 FILTER 태그를 단다.
+    # SNP과 indel은 오류 양상이 달라 기준을 따로 적용한 뒤 다시 합친다.
+    #   QD  : 변이 품질 / depth (낮으면 depth에 비해 증거가 약함)
+    #   FS, SOR : strand bias (한쪽 가닥 read에서만 보이면 인공물 의심)
+    #   MQ  : 매핑 품질 (낮으면 반복서열·유사유전자에 잘못 정렬된 read)
+    #   ReadPosRankSum : 변이가 read 끝에만 몰려 있는지
+    input:
+        vcf=f"results/vcf/{S}.raw.vcf.gz",
+        ref=REF,
+    output:
+        vcf=f"results/vcf/{S}.filtered.vcf.gz",
+    params:
+        snp=config["filters"]["snp"],
+        indel=config["filters"]["indel"],
+        tmp=f"results/vcf/tmp_{S}",
+    log:
+        "logs/hard_filter.log",
+    shell:
+        """
+        (mkdir -p {params.tmp}
+         gatk SelectVariants -R {input.ref} -V {input.vcf} -select-type SNP -O {params.tmp}/snp.vcf.gz
+         gatk SelectVariants -R {input.ref} -V {input.vcf} -xl-select-type SNP -O {params.tmp}/indel.vcf.gz
+         gatk VariantFiltration -R {input.ref} -V {params.tmp}/snp.vcf.gz \
+              --filter-expression '{params.snp}' --filter-name SNP_HARD_FILTER -O {params.tmp}/snp.f.vcf.gz
+         gatk VariantFiltration -R {input.ref} -V {params.tmp}/indel.vcf.gz \
+              --filter-expression '{params.indel}' --filter-name INDEL_HARD_FILTER -O {params.tmp}/indel.f.vcf.gz
+         gatk MergeVcfs -I {params.tmp}/snp.f.vcf.gz -I {params.tmp}/indel.f.vcf.gz -O {output.vcf}
+         rm -rf {params.tmp}) &> {log}
+        """
+
+
+rule normalize:
+    # 같은 변이도 표기법이 여러 가지일 수 있다(특히 indel, multi-allelic).
+    #  -m -any : 한 줄에 ALT가 여러 개인 변이를 한 줄당 하나로 분리
+    #  -f ref  : indel을 left-align (가장 왼쪽 위치로 통일)
+    #  ALT="*" 제거 : '*'는 "이 자리가 다른 줄에 기록된 deletion에 덮여 있다"는 표시일 뿐
+    #                 독립된 변이가 아니다(분리 후 남은 '*' 줄은 주석·DB 매칭이 불가능).
+    # 이렇게 표준화해야 ClinVar 같은 DB와 "같은 변이"로 정확히 매칭된다.
+    input:
+        vcf=f"results/vcf/{S}.filtered.vcf.gz",
+        ref=REF,
+    output:
+        vcf=f"results/vcf/{S}.norm.vcf.gz",
+    log:
+        "logs/normalize.log",
+    shell:
+        """
+        (bcftools norm -m -any -f {input.ref} {input.vcf} \
+           | bcftools view -e 'ALT="*"' -Oz -o {output.vcf}
+         tabix -f -p vcf {output.vcf}) 2> {log}
+        """
+
+
+# ============================================================================
+# 4. 주석 (기능적 영향: SnpEff / 임상적 의미: ClinVar)
+# ============================================================================
+
+rule snpeff_build:
+    # SnpEff용 주석 DB를 직접 빌드(chr10 서열 + MANE Select 전사체).
+    # 공식 GRCh38 DB는 1GB 이상이라, 필요한 염색체만으로 작은 DB를 만든다.
+    input:
+        ref=REF,
+        gtf=f"resources/annot/{CHR}.mane.gtf",
+    output:
+        config="resources/snpeff/snpEff.config",
+        db=f"resources/snpeff/data/{SNPEFF_DB}/snpEffectPredictor.bin",
+    params:
+        db=SNPEFF_DB,
+        dir=f"resources/snpeff/data/{SNPEFF_DB}",
+    log:
+        "logs/snpeff_build.log",
+    shell:
+        """
+        (mkdir -p {params.dir}
+         cp {input.ref} {params.dir}/sequences.fa
+         cp {input.gtf} {params.dir}/genes.gtf
+         printf 'data.dir = ./data/\\n{params.db}.genome : Human {params.db} (GENCODE MANE Select)\\n' > {output.config}
+         snpEff -Xmx4g build -gtf22 -v -noCheckCds -noCheckProtein -c {output.config} {params.db}) &> {log}
+        """
+
+
+rule snpeff_annotate:
+    # 각 변이가 어느 유전자의 어디에 있고(exon/intron/UTR),
+    # 단백질에 어떤 영향을 주는지(missense, synonymous, frameshift, splice ...) 예측해 ANN 필드에 기록.
+    input:
+        vcf=f"results/vcf/{S}.norm.vcf.gz",
+        config="resources/snpeff/snpEff.config",
+        db=f"resources/snpeff/data/{SNPEFF_DB}/snpEffectPredictor.bin",
+    output:
+        vcf=f"results/vcf/{S}.snpeff.vcf.gz",
+        stats=f"results/qc/{S}.snpeff_stats.csv",
+        html=f"results/qc/{S}.snpeff_summary.html",
+    params:
+        db=SNPEFF_DB,
+    log:
+        "logs/snpeff_annotate.log",
+    shell:
+        """
+        (snpEff -Xmx4g ann -c {input.config} -csvStats {output.stats} -stats {output.html} \
+            {params.db} {input.vcf} | bgzip > {output.vcf}
+         tabix -f -p vcf {output.vcf}) 2> {log}
+        """
+
+
+rule clinvar_subset:
+    # ClinVar(NCBI의 변이-질병 관계 공개 DB) VCF에서 chr10만 원격으로 추출.
+    # ClinVar는 염색체를 "10", UCSC 레퍼런스는 "chr10"으로 쓰므로 이름을 맞춰 준다.
+    output:
+        vcf=f"resources/clinvar/clinvar.{CHR}.vcf.gz",
+        tbi=f"resources/clinvar/clinvar.{CHR}.vcf.gz.tbi",
+    params:
+        url=config["urls"]["clinvar"],
+        num=CHR.replace("chr", ""),
+        chrom=CHR,
+        dir="resources/clinvar",
+    log:
+        "logs/clinvar_subset.log",
+    shell:
+        """
+        (OUT=$(realpath -m {output.vcf})
+         mkdir -p {params.dir} && cd {params.dir}
+         echo "{params.num} {params.chrom}" > rename.txt
+         bcftools view -r {params.num} {params.url} \
+           | bcftools annotate --rename-chrs rename.txt -Oz -o $OUT
+         tabix -f -p vcf $OUT) 2> {log}
+        """
+
+
+rule clinvar_annotate:
+    # 내 변이와 위치·REF·ALT가 정확히 일치하는 ClinVar 레코드의 정보를 붙인다.
+    #   CLNSIG     : 임상적 의미 (Pathogenic / Benign / drug response ...)
+    #   CLNDN      : 관련 질환명
+    #   CLNREVSTAT : 근거 수준(review status, 별점)
+    # 최종적으로 hard filter를 통과(PASS)한 변이만 남긴다.
+    input:
+        vcf=f"results/vcf/{S}.snpeff.vcf.gz",
+        clinvar=f"resources/clinvar/clinvar.{CHR}.vcf.gz",
+    output:
+        all=f"results/vcf/{S}.annotated.vcf.gz",
+        final=f"results/vcf/{S}.final.vcf.gz",
+    log:
+        "logs/clinvar_annotate.log",
+    shell:
+        """
+        (bcftools annotate -a {input.clinvar} \
+            -c INFO/CLNSIG,INFO/CLNDN,INFO/CLNREVSTAT,INFO/CLNHGVS,INFO/RS,INFO/ALLELEID \
+            {input.vcf} -Oz -o {output.all}
+         tabix -f -p vcf {output.all}
+         bcftools view -f PASS {output.all} -Oz -o {output.final}
+         tabix -f -p vcf {output.final}) 2> {log}
+        """
+
+
+# ============================================================================
+# 5. 정확도 검증 (GIAB truth set 대비)
+# ============================================================================
+
+rule truth_subset:
+    # GIAB(Genome in a Bottle)가 여러 플랫폼·방법으로 교차 검증해 공개한 HG001의 "정답 변이".
+    #  - benchmark.vcf : 정답 변이 목록
+    #  - benchmark.bed : 정답을 신뢰할 수 있는 영역(high-confidence region).
+    #    이 영역 밖은 정답 자체가 불확실하므로 평가에서 제외해야 공정하다.
+    # 패널 영역과 고신뢰 영역의 교집합에서만 비교한다.
+    input:
+        bed=BED,
+        ref=REF,
+    output:
+        vcf=f"resources/truth/{S}.truth.panel.vcf.gz",
+        bed=f"resources/truth/{S}.eval_regions.bed",
+    params:
+        vcf_url=config["urls"]["truth_vcf"],
+        bed_url=config["urls"]["truth_bed"],
+        chrom=CHR,
+        dir="resources/truth",
+    log:
+        "logs/truth_subset.log",
+    shell:
+        """
+        (BED=$(realpath {input.bed}); REF=$(realpath {input.ref})
+         VCF=$(realpath -m {output.vcf}); OUTBED=$(realpath -m {output.bed})
+         mkdir -p {params.dir} && cd {params.dir}
+         bcftools view -R $BED {params.vcf_url} \
+           | bcftools norm -m -any -f $REF -Oz -o $VCF
+         tabix -f -p vcf $VCF
+         curl -fsSL {params.bed_url} | awk '$1=="{params.chrom}"' \
+           | bedtools intersect -a - -b $BED > $OUTBED) 2> {log}
+        """
+
+
+rule benchmark:
+    # 내 결과(PASS 변이)와 정답을 평가 영역 안에서 비교 -> TP / FP / FN 분류.
+    #  -c none : 위치·REF·ALT가 모두 같아야 같은 변이로 인정
+    input:
+        truth=f"resources/truth/{S}.truth.panel.vcf.gz",
+        query=f"results/vcf/{S}.final.vcf.gz",
+        bed=f"resources/truth/{S}.eval_regions.bed",
+    output:
+        isec=directory("results/benchmark/isec"),
+    log:
+        "logs/benchmark.log",
+    shell:
+        "bcftools isec -c none -T {input.bed} -p {output.isec} {input.truth} {input.query} &> {log}"
+
+
+rule benchmark_summary:
+    input:
+        isec="results/benchmark/isec",
+    output:
+        tsv=f"results/benchmark/{S}.benchmark.tsv",
+        discordant=f"results/benchmark/{S}.discordant.tsv",
+    script:
+        "scripts/benchmark.py"
+
+
+# ============================================================================
+# 6. 리포트 (VCF -> 사람이 읽는 표 + 요약)
+# ============================================================================
+
+rule report:
+    input:
+        final=f"results/vcf/{S}.final.vcf.gz",
+        annotated=f"results/vcf/{S}.annotated.vcf.gz",
+        clinvar=f"resources/clinvar/clinvar.{CHR}.vcf.gz",
+        bam=f"results/bam/{S}.markdup.bam",
+        thresholds=f"results/qc/{S}.thresholds.bed.gz",
+        summary=f"results/qc/{S}.mosdepth.summary.txt",
+        benchmark=f"results/benchmark/{S}.benchmark.tsv",
+    output:
+        variants=f"results/report/{S}.variants.tsv",
+        pgx=f"results/report/{S}.pgx_sites.tsv",
+        md=f"results/report/{S}.report.md",
+    script:
+        "scripts/make_report.py"

@@ -1,0 +1,4 @@
+type	TP	FP	FN	precision	recall	F1	genotype_concordance
+SNP	492	0	5	1.0000	0.9899	0.9949	1.0000
+INDEL	74	0	0	1.0000	1.0000	1.0000	1.0000
+ALL	566	0	5	1.0000	0.9912	0.9956	1.0000

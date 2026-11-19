@@ -1,0 +1,23 @@
+# 파이프라인 전체 도구를 한 conda 환경에 고정 (bioconda)
+# 설치: micromamba create -n ngs -f workflow/envs/environment.yaml
+name: ngs
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  - snakemake-minimal   # 워크플로 엔진
+  - fastqc              # raw read 품질 확인
+  - fastp               # 어댑터/저품질 염기 트리밍 + QC
+  - multiqc             # 여러 QC 결과를 하나의 리포트로 통합
+  - bwa-mem2            # 레퍼런스 정렬
+  - samtools            # BAM 정렬/인덱싱/통계
+  - mosdepth            # 타깃 영역 coverage 계산
+  - gatk4               # MarkDuplicates, HaplotypeCaller, VariantFiltration
+  - bcftools            # VCF 정규화/필터/주석/비교
+  - htslib              # bgzip, tabix
+  # snpeff 5.3부터는 Java 21이 필요한데 gatk4는 Java 17에 묶여 있어 한 환경에 공존 불가 -> 5.2로 고정
+  - snpeff=5.2          # 변이의 유전자·단백질 수준 영향 주석
+  - snpsift=5.2
+  - bedtools            # BED 구간 연산 (평가 영역 교집합)
+  - curl

@@ -1,0 +1,7 @@
+# 셸/파이썬/Snakemake 파일은 항상 LF (WSL에서 CRLF면 실행이 깨짐)
+*.sh text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+Snakefile text eol=lf
+*.gz binary
+*.tbi binary

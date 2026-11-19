@@ -1,0 +1,6 @@
+class	chrom	pos	ref	alt	type	truth_GT	query_GT
+FN	chr10	94813990	C	T	SNP	0/1	.
+FN	chr10	94817023	A	G	SNP	0/1	.
+FN	chr10	94817028	G	A	SNP	0/1	.
+FN	chr10	94819853	C	G	SNP	0/1	.
+FN	chr10	94968412	A	C	SNP	0/1	.
