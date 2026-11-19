@@ -124,13 +124,18 @@ bash /mnt/c/Users/<사용자>/ngs-variant-calling-pipeline/scripts/export_result
 star allele을 정의하는 핵심 자리 5곳을 확인했습니다. 변이가 없는 자리는 depth가 충분한지(≥20x)까지 확인해
 "검출 안 됨"과 "정상"을 구분했습니다.
 
-| 유전자 | allele | rsID | 결과 | depth |
-|---|---|---|---|---|
-| CYP2C19 | `*2` (기능 없음) | rs4244285 | **het** (REF 38 / ALT 34) | 72 |
-| CYP2C19 | `*3` (기능 없음) | rs4986893 | 변이 없음 | 67 |
-| CYP2C19 | `*17` (기능 증가) | rs12248560 | 변이 없음 | 60 |
-| CYP2C9 | `*2` (기능 감소) | rs1799853 | **het** (REF 24 / ALT 32) | 56 |
-| CYP2C9 | `*3` (기능 없음) | rs1057910 | 변이 없음 | 60 |
+| 유전자 | allele | rsID | 내 결과 | depth | GIAB truth |
+|---|---|---|---|---|---|
+| CYP2C19 | `*2` (기능 없음) | rs4244285 | **het** (REF 38 / ALT 34) | 72 | het ✔ |
+| CYP2C19 | `*3` (기능 없음) | rs4986893 | 변이 없음 | 67 | 변이 없음 ✔ |
+| CYP2C19 | `*17` (기능 증가) | rs12248560 | 변이 없음 | 60 | 변이 없음 ✔ |
+| CYP2C9 | `*2` (기능 감소) | rs1799853 | **het** (REF 24 / ALT 32) | 56 | het ✔ |
+| CYP2C9 | `*3` (기능 없음) | rs1057910 | 변이 없음 | 60 | 변이 없음 ✔ |
+
+- **독립 검증**: 5개 자리 모두 GIAB v4.2.1 정답과 genotype이 일치했습니다. "변이 없음" 3곳은 GIAB 고신뢰 영역 안에 있고
+  정답에도 변이가 없는 자리라, 단순히 "못 찾은 것"이 아니라 정답 기준으로도 hom-ref입니다. 이 대조는 리포트 단계에서 자동으로 수행됩니다.
+- PGx 표준물질 프로그램인 CDC GeT-RM의 공개 자료(CYP2C19 consensus 표, CYP2C8/9/19 NGS 논문 본문)에서는
+  NA12878의 star allele 합의값을 찾지 못해, star allele 수준(`*1/*2`)의 외부 대조는 하지 못했습니다.
 
 - **CYP2C19 `*1/*2`로 추정** → CPIC 기준 intermediate metabolizer. clopidogrel(항혈소판제)은 CYP2C19가 활성형으로
   바꿔 줘야 하는 전구약물이라, 이 표현형에서는 약효가 떨어질 수 있습니다.
@@ -152,6 +157,31 @@ star allele을 정의하는 핵심 자리 5곳을 확인했습니다. 변이가 
 - 그 외 BMPR1A p.Pro2Thr(Benign/Likely benign), RET intron 변이 rs2435357(Hirschsprung병 위험인자로 보고된 흔한 변이) 등은
   유전성 암 관점에서 보고 대상이 아닙니다. 세 암 유전자(PTEN, RET, BMPR1A)에서 병원성 변이는 검출되지 않았습니다.
 
+### 5. IGV로 직접 확인
+
+숫자만 보지 않고 read가 실제로 어떻게 쌓였는지 IGV 배치 모드로 확인했습니다
+([`scripts/igv_snapshots.sh`](scripts/igv_snapshots.sh), 변이 자리의 염기 기준으로 read 정렬).
+
+**CYP2C19 `*2` (rs4244285, chr10:94781859 G>A)** — 절반가량의 read가 A(초록)를 갖는 전형적인 het.
+아래 아미노산 트랙에서 이 자리가 Pro(P) 코돈의 세 번째 염기라 아미노산이 바뀌지 않는 것(synonymous)도 보입니다.
+
+![CYP2C19*2](docs/igv/CYP2C19_star2_rs4244285.png)
+
+**CYP2C9 `*2` (rs1799853, chr10:94942290 C>T)** — Arg(R) 코돈 위의 het 변이.
+
+![CYP2C9*2](docs/igv/CYP2C9_star2_rs1799853.png)
+
+**MQ 필터에서 탈락한 진짜 변이 (chr10:94817023 A>G, 94817028 G>A)** — VCF 트랙에서 흐리게 표시된 것이 필터 탈락 변이입니다.
+두 변이는 5 bp 떨어져 있는데 **한 read가 둘을 동시에 갖는 경우가 없습니다**(서로 다른 염색체에 있는 trans 배치).
+GIAB 정답의 phasing(`0|1`과 `1|0`)과도 일치합니다. 흰색으로 보이는 read는 MAPQ 0, 즉 게놈의 다른 곳에도 똑같이 정렬될 수 있는
+read이고, 이런 read가 섞여 평균 MQ를 40 아래로 끌어내렸습니다.
+
+![filtered low MQ](docs/igv/CYP2C19_filtered_lowMQ_94817023_94817028.png)
+
+**MQ 필터 탈락 변이 (chr10:94813990 C>T)** — read 모양만 보면 위의 PASS 변이와 구별되지 않는 깨끗한 het입니다.
+
+![filtered low MQ 2](docs/igv/CYP2C19_filtered_lowMQ_94813990.png)
+
 ## 한계
 
 - **read를 "이미 정렬된 BAM의 타깃 구간"에서 가져왔습니다.** 원래 다른 곳(유사 유전자 등)에 정렬됐던 read는 포함되지 않아,
@@ -168,8 +198,9 @@ config/config.yaml              샘플·유전자·URL·필터 기준·PGx 자�
 workflow/Snakefile              파이프라인 본체
 workflow/envs/environment.yaml  conda 환경 정의 (+ lock 파일)
 workflow/scripts/               make_targets.py / benchmark.py / make_report.py
-scripts/                        setup_wsl.sh / sync_to_wsl.sh / export_results.sh
+scripts/                        setup_wsl.sh / sync_to_wsl.sh / export_results.sh / igv_snapshots.sh
 docs/example_output/            실제 실행 결과 (리포트, 변이 표, MultiQC, 최종 VCF)
+docs/igv/                       IGV 스크린샷
 ```
 
 ## 만들면서 겪은 문제

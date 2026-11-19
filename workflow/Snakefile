@@ -515,6 +515,8 @@ rule report:
         thresholds=f"results/qc/{S}.thresholds.bed.gz",
         summary=f"results/qc/{S}.mosdepth.summary.txt",
         benchmark=f"results/benchmark/{S}.benchmark.tsv",
+        truth=f"resources/truth/{S}.truth.panel.vcf.gz",
+        eval_bed=f"resources/truth/{S}.eval_regions.bed",
     output:
         variants=f"results/report/{S}.variants.tsv",
         pgx=f"results/report/{S}.pgx_sites.tsv",

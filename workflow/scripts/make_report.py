@@ -98,6 +98,29 @@ def depth_at(chrom, pos):
     return int(r.stdout.split()[2]) if r.stdout.strip() else 0
 
 
+# 독립 검증: GIAB truth(여러 시퀀싱 기술로 교차 확인된 HG001의 정답)에서 같은 자리를 조회한다.
+#  - truth에 변이가 있으면 그 genotype
+#  - truth에 변이가 없고 고신뢰 영역 안이면 "정답도 변이 없음(0/0)"이라고 말할 수 있다
+#  - 고신뢰 영역 밖이면 정답 자체가 불확실 -> 검증 불가
+truth = {(v["chrom"], v["pos"], v["ref"], v["alt"]): v for v in read_vcf(inp.truth)}
+confident = []
+with open(inp.eval_bed) as fh:
+    for line in fh:
+        c, s, e = line.split()[:3]
+        confident.append((c, int(s), int(e)))
+
+
+def truth_genotype(chrom, pos, ref, alt):
+    v = truth.get((chrom, pos, ref, alt))
+    if v:
+        gt = "/".join(sorted(v["fmt"]["GT"].replace("|", "/").split("/")))
+        return f"{gt} ({zygosity(gt)})"
+    # BED는 0-based 반열린 구간: start < pos(1-based) <= end
+    if any(c == chrom and s < pos <= e for c, s, e in confident):
+        return "0/0 (변이 없음)"
+    return "고신뢰 영역 밖(검증 불가)"
+
+
 pgx_rows = []
 for site in cfg["report"]["pgx_sites"]:
     ref, alt = site["change"].split(">")
@@ -119,10 +142,11 @@ for site in cfg["report"]["pgx_sites"]:
     else:
         result = f"판정불가 (depth {dp} < {MIN_DEPTH})"
     pgx_rows.append([site["gene"], site["allele"], f"rs{site['rsid']}", f"{chrom}:{pos}",
-                     site["change"], site["function"], str(dp), result])
+                     site["change"], site["function"], str(dp), result,
+                     truth_genotype(chrom, pos, ref, alt)])
 
 with open(out.pgx, "w") as fh:
-    fh.write("gene\tstar_allele\trsID\tposition\tchange\tallele_function\tdepth\tresult\n")
+    fh.write("gene\tstar_allele\trsID\tposition\tchange\tallele_function\tdepth\tresult\tGIAB_truth\n")
     for r in pgx_rows:
         fh.write("\t".join(r) + "\n")
 
@@ -194,7 +218,7 @@ md = f"""# {SAMPLE} 변이검출 결과 요약
 
 ## 5. 약물유전체(PGx) 핵심 자리
 
-{md_table(["유전자", "star allele", "rsID", "위치(GRCh38)", "변화", "대립유전자 기능", "depth", "결과"], pgx_rows)}
+{md_table(["유전자", "star allele", "rsID", "위치(GRCh38)", "변화", "대립유전자 기능", "depth", "결과", "GIAB truth"], pgx_rows)}
 """
 with open(out.md, "w", encoding="utf-8") as fh:
     fh.write(md)

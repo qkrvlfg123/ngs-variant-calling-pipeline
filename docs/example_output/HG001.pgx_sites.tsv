@@ -1,6 +1,6 @@
-gene	star_allele	rsID	position	change	allele_function	depth	result
-CYP2C19	*2	rs4244285	chr10:94781859	G>A	기능 없음	72	0/1 (het, AD=38,34)
-CYP2C19	*3	rs4986893	chr10:94780653	G>A	기능 없음	67	0/0 (변이 없음)
-CYP2C19	*17	rs12248560	chr10:94761900	C>T	기능 증가	60	0/0 (변이 없음)
-CYP2C9	*2	rs1799853	chr10:94942290	C>T	기능 감소	56	0/1 (het, AD=24,32)
-CYP2C9	*3	rs1057910	chr10:94981296	A>C	기능 없음	60	0/0 (변이 없음)
+gene	star_allele	rsID	position	change	allele_function	depth	result	GIAB_truth
+CYP2C19	*2	rs4244285	chr10:94781859	G>A	기능 없음	72	0/1 (het, AD=38,34)	0/1 (het)
+CYP2C19	*3	rs4986893	chr10:94780653	G>A	기능 없음	67	0/0 (변이 없음)	0/0 (변이 없음)
+CYP2C19	*17	rs12248560	chr10:94761900	C>T	기능 증가	60	0/0 (변이 없음)	0/0 (변이 없음)
+CYP2C9	*2	rs1799853	chr10:94942290	C>T	기능 감소	56	0/1 (het, AD=24,32)	0/1 (het)
+CYP2C9	*3	rs1057910	chr10:94981296	A>C	기능 없음	60	0/0 (변이 없음)	0/0 (변이 없음)
