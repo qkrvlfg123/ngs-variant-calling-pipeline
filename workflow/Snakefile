@@ -136,7 +136,7 @@ rule fetch_reads:
 
 rule fastqc:
     # 시퀀싱 원본 품질 확인: 염기별 품질점수, GC 분포, 어댑터 오염, 중복률.
-    # "분석을 시작해도 되는 데이터인가"를 판단하는 첫 관문.
+    # 분석에 쓸 수 있는 데이터인지 판단하는 첫 관문.
     input:
         f"resources/reads/{S}_R1.fastq.gz",
         f"resources/reads/{S}_R2.fastq.gz",
@@ -219,7 +219,7 @@ rule mark_duplicates:
 
 rule alignment_qc:
     # 정렬 품질 지표: 매핑률, properly paired 비율, insert size, 타깃 영역 평균 depth 등.
-    # 임상 검사에서는 "타깃의 몇 %가 20x(또는 30x) 이상인가"가 핵심 합격 기준이다.
+    # 임상 검사에서는 20x(또는 30x) 이상인 타깃 비율이 핵심 합격 기준이다.
     input:
         bam=f"results/bam/{S}.markdup.bam",
         bed=BED,

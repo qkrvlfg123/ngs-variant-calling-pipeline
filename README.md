@@ -40,13 +40,13 @@ MultiQC HTML, 최종 VCF).
    └────────────────────┘   └─────────────────────┘   └────────────────────┘
 ```
 
-| 단계 | 도구 | 왜 하는가 | 임상 NGS 검사에서의 대응 |
+| 단계 | 도구 | 하는 이유 | 임상 NGS 검사에서의 대응 |
 |---|---|---|---|
 | 타깃 정의 | GENCODE GTF → BED | 좌표를 손으로 적지 않고 유전자 이름에서 자동 추출(빌드 혼동·오타 방지) | 패널 설계 BED |
 | Read QC·트리밍 | FastQC, fastp | 어댑터·저품질 염기는 오정렬과 위양성의 원인 | run QC (Q30 등) |
 | 정렬 | BWA-MEM2 | read가 게놈 어디서 왔는지 결정. read group은 GATK 필수 | 1차 분석 |
 | 중복 표시 | GATK MarkDuplicates | PCR 복제본을 독립 증거로 세지 않도록 flag | 라이브러리 품질 평가 |
-| Coverage | mosdepth | "타깃의 몇 %가 20x 이상인가" = 검사 합격 기준 | 검사 유효성 판정 |
+| Coverage | mosdepth | 20x 이상인 타깃 비율 = 검사 합격 기준 | 검사 유효성 판정 |
 | 변이검출 | GATK HaplotypeCaller | local assembly 방식이라 indel 주변에서 정확 | 2차 분석 |
 | 필터링 | GATK hard filter | 샘플 1개·작은 영역이라 VQSR 학습 불가 → Best Practices 권장 기준 사용 | 위양성 제거 |
 | 정규화 | bcftools norm | multi-allelic 분리 + indel left-align → DB와 정확히 매칭 | 변이 표기 표준화 |
@@ -54,7 +54,7 @@ MultiQC HTML, 최종 VCF).
 | 임상 주석 | ClinVar | 알려진 병원성·약물반응 분류 연결 | 변이 판독 근거 |
 | 정확도 검증 | bcftools isec vs GIAB | 정답이 알려진 샘플로 민감도·정밀도 측정 | 검사법 밸리데이션 |
 
-각 rule의 "무엇을/왜"는 [`workflow/Snakefile`](workflow/Snakefile) 주석에 적어 두었습니다.
+각 rule의 역할과 이유는 [`workflow/Snakefile`](workflow/Snakefile) 주석에 적어 두었습니다.
 
 ## 데이터
 
@@ -92,14 +92,14 @@ bash /mnt/c/Users/<사용자>/ngs-variant-calling-pipeline/scripts/export_result
 
 ## 결과 해석
 
-### 1. QC — 분석해도 되는 데이터인가
+### 1. QC — 데이터 품질 확인
 
 - Q30 염기 비율 90.3% → 트리밍 후 92.4%, 매핑률 100%, properly paired 99.8%, 중복률 0.09%
 - 타깃 평균 58.6x, 모든 유전자에서 ≥20x 비율 99.7% 이상 → germline het 변이 검출에 충분한 depth
 - 중복률이 매우 낮은 것은 PCR-free WGS 라이브러리를 서브샘플링했기 때문입니다.
   hybrid capture 패널이라면 보통 훨씬 높게 나옵니다.
 
-### 2. 정확도 — 놓친 변이 5개는 왜 놓쳤는가
+### 2. 정확도 — 놓친 변이 5개의 원인
 
 위양성은 0개였고, 놓친 변이(FN)는 SNP 5개입니다. 5개 모두 **검출은 됐지만 hard filter에서 탈락**한 경우였습니다.
 

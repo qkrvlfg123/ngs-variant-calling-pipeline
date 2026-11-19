@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # IGV(Integrative Genomics Viewer) 배치 모드로 관심 변이 자리의 read 정렬 화면을 PNG로 저장한다.
-# 왜: 변이검출기의 숫자(QD, MQ ...)만 보지 않고 "read가 실제로 어떻게 쌓여 있는지"를 눈으로 확인하는 것이
+# 이유: 변이검출기의 숫자(QD, MQ ...)만 보지 않고 "read가 실제로 어떻게 쌓여 있는지"를 눈으로 확인하는 것이
 #     변이 판독의 마지막 단계다. 필터에서 탈락한 변이나 임상적으로 중요한 변이는 IGV로 직접 본다.
 # 준비: sudo apt install xvfb ; micromamba create -n igv -c conda-forge -c bioconda igv
 #       (IGV는 Java 21이 필요해 파이프라인 환경(ngs, Java 17)과 분리)

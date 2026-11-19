@@ -61,7 +61,7 @@ with open(out_tsv, "w") as out:
         conc = gt_ok / n_tp if n_tp else float("nan")
         out.write(f"{t}\t{n_tp}\t{n_fp}\t{n_fn}\t{prec:.4f}\t{rec:.4f}\t{f1:.4f}\t{conc:.4f}\n")
 
-# 불일치 변이 목록: "왜 틀렸는가"를 IGV 등에서 하나씩 확인하기 위한 자료
+# 불일치 변이 목록: 틀린 원인을 IGV 등에서 하나씩 확인하기 위한 자료
 with open(out_miss, "w") as out:
     out.write("class\tchrom\tpos\tref\talt\ttype\ttruth_GT\tquery_GT\n")
     for r in fn:
